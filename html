@@ -1,0 +1,180 @@
+""" 
+Notes:
+* This activity requires Python 3.7 runtime
+* Set timeout to 30s
+
+Steps to include bleach library in your own lambda function
+1. create a folder to contain all the files we need
+2. create a file called lambda_function.py (the name has to be lambda_function)
+3. navigate to the directory in terminal / command prompt and run pip install bleach -t . (-t . installs bleach to current folder)
+4. zip up the contents of the folder (don't zip up the folder itself but just the contents)
+5. create a new lambda function in AWS
+6. then in "code entry type" dropdown box which says "edit code inline", select "upload a .zip file"
+7. upload your zip file
+"""
+
+import json
+import re
+import signal
+    
+def lambda_handler(event, context):
+    
+    method = event.get('httpMethod',{}) 
+        
+    with open("index.html", 'r') as f:
+        indexPage = f.read()
+    
+    if method == 'GET':
+        return {
+            "statusCode": 200,
+            "headers": {
+            'Content-Type': 'text/html',
+            },
+            "body": indexPage
+        }
+        
+    if method == 'POST':
+        bodyContent = event.get('body',{}) 
+        parsedBodyContent = json.loads(bodyContent)
+        testCases = parsedBodyContent["shown"]["0"] 
+        solution = parsedBodyContent["editable"]["0"] 
+
+        # sanitise HTML input
+        import bleach
+        otherTags = ['h1','h2','h3', 'h4', 'h5', 'h6', 'blockquote', 'p', 'a', 'ul', 'ol',
+        'nl', 'li', 'b', 'i', 'strong', 'em', 'strike', 'code', 'hr', 'br', 'div',
+        'table', 'thead', 'caption', 'tbody', 'tr', 'th', 'td','p', 'span', 'button' ,'input']
+        attrs = {
+            '*': ['class'],
+            'a': ['href', 'rel'],
+            'img': ['alt'],
+        }
+        
+        # Setup variables for printing results on the UI
+        tableContents = ""
+        textBackgroundColor = "#ffffff"
+        expectedText = ""
+        receivedText = ""
+        textResults = ""
+        overallResults = "All tests passed: True"
+        
+        timeout = False
+        # handler function that tell the signal module to execute
+        # our own function when SIGALRM signal received.
+        def timeout_handler(num, stack):
+            print("Received SIGALRM")
+            raise Exception("processTooLong")
+
+        # register this with the SIGALRM signal    
+        signal.signal(signal.SIGALRM, timeout_handler)
+        
+        # signal.alarm(10) tells the OS to send a SIGALRM after 10 seconds from this point onwards.
+        signal.alarm(10)
+
+        # After setting the alarm clock we invoke the long running function.
+        try:
+            import re
+            for item in re.sub('&zwnj;.*&zwnj;','',testCases, flags=re.DOTALL).strip().splitlines():
+                regexMatchHtmlContents = re.search(item, solution)
+                expectedText = item.replace("<","&lt;").replace(">","&gt;")
+                if hasattr(regexMatchHtmlContents, 'group'):
+                    # escape < tag and > tag so it shows up in td cell
+                    receivedText = solution.replace("<","&lt;").replace(">","&gt;")
+                    if item == regexMatchHtmlContents.group(0):
+                        textResults = textResults + "\nHurray! You have passed the test case. You expected {0} and provided the HTML code that contains it.\n".format(item)
+                        textBackgroundColor = "#b2d8b2"
+                else:
+                    receivedText = solution.replace("<","&lt;").replace(">","&gt;")                 
+                    textResults = textResults + "\nThe test case eludes your code so far but try again! Did not receive {0} as expected.\n".format(item)
+                    textBackgroundColor = "#ff9999"
+                    overallResults = "All tests passed: False"
+                tableContents = tableContents + """
+                    <tr bgcolor={2}>
+                        <td>{0}</td>
+                        <td>{1}</td>
+                    </tr>
+                    """.format(expectedText,receivedText,textBackgroundColor)
+        except Exception as ex:
+            if str(ex) == "processTooLong":
+                timeout = True
+                print("processTooLong triggered")
+        # set the alarm to 0 seconds after all is done
+        finally:
+            signal.alarm(0)
+        
+        htmlResults="""
+            <html>
+                <head>
+                    <meta charset="utf-8">
+                    <meta content="width=device-width,initial-scale=1,minimal-ui" name="viewport">
+                </head>
+                <body>
+                    <div>
+                        <p class="class="md-subheading">{0}</p>
+                        <br/>
+                        <p class="md-subheading tableTitle">Test cases</p>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:75%">Expected</th>
+                                    <th style="width:25%">Received</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {1}
+                            </tbody>
+                        </table>
+                    </div>
+                </body>         
+                <style>
+                br {{
+                    display:block;
+                    content:"";
+                    margin:1rem
+                }}
+                table{{
+                    text-align:center
+                }}
+                .tableTitle{{
+                    text-decoration:underline
+                }}
+                </style>
+                    </div>
+                    <br/>
+                    <p class="md-subheading">
+                        HTML code provided:
+                    </p>
+                    <div>
+                        {2}
+                    </div>
+                </body>
+                <style>
+                br {{
+                    display:block;
+                    content:"";
+                    margin:1rem
+                }}
+                table{{
+                    text-align:center
+                }}
+                .tableTitle{{
+                    text-decoration:underline
+                }}
+                .md-subheading{{
+                    text-decoration:underline
+                }}
+                </style>
+            </html>
+            """.format(overallResults, tableContents, solution)
+        return {
+            "statusCode": 200,
+            "headers": {
+            "Content-Type": "application/json",
+                },
+            "body":  json.dumps({
+                "isComplete":overallResults == "All tests passed: True",
+                "jsonFeedback": json.dumps(overallResults),
+                "htmlFeedback": htmlResults,
+                "textFeedback": overallResults + "\n" + textResults
+            })
+            }
